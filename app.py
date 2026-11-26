@@ -90,15 +90,31 @@ def _check_image(data: bytes) -> dict:
     if resp.status_code != 200:
         raise RuntimeError(f"Sightengine error: HTTP {resp.status_code}.")
 
-    genai = (body.get("type") or {}).get("genai") or {}
+    genai = body.get("type") or {}
+    # Sightengine puts the global score at type.ai_generated (the
+    # per-generator breakdown lives in type.ai_generators). Older
+    # docs showed it under type.genai, so check that too.
     probability = genai.get("ai_generated")
+    if probability is None:
+        nested = genai.get("genai") or {}
+        probability = nested.get("ai_generated")
     if probability is None:
         raise RuntimeError("Sightengine ne koi probability nahi di.")
     probability = max(0.0, min(1.0, float(probability)))
+    # Sab se zyada score wala generator, agar diya gaya ho.
+    label = "sightengine"
+    generators = genai.get("ai_generators") or {}
+    if isinstance(generators, dict) and generators:
+        try:
+            top = max(generators.items(), key=lambda kv: float(kv[1] or 0))
+            if top[1] is not None and float(top[1]) > 0:
+                label = str(top[0])
+        except (TypeError, ValueError):
+            pass
     return {
         "ai_probability": round(probability, 4),
         "verdict": "ai" if probability >= 0.5 else "real",
-        "label": "sightengine",
+        "label": label,
         "version": None,
         "model": MODEL_ID,
     }
