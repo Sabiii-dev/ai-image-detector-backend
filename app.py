@@ -35,6 +35,12 @@ from PIL import Image
 
 MODEL_ID = "wiltodelta/raiw-source-classify"
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
+# Inference se pehle image ko is size tak chhota kar diya jata hai
+# (lambi side). Bari phone photos (4000px, 4-5 MB) slow hoti hain
+# aur free server ki 512 MB memory bhar ke crash (502) kara deti
+# hain; 1024px pe detection tez hoti hai aur accuracy pe koi
+# khaas farq nahi parta.
+MAX_SIDE_PX = 1024
 
 app = FastAPI(title="AI Image Detector backend")
 
@@ -151,6 +157,7 @@ async def detect(request: Request, image: Optional[UploadFile] = File(None)):
 
     # Validate that the bytes are really an image before classifying.
     suffix = ".jpg"
+    small_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tmp:
             tmp.write(data)
@@ -160,6 +167,15 @@ async def detect(request: Request, image: Optional[UploadFile] = File(None)):
             suffix = "." + (img.format or "jpg").lower().replace("jpeg", "jpg")
         os.rename(tmp_path, tmp_path + suffix)
         tmp_path = tmp_path + suffix
+        # Bari image ko inference se pehle chhota kar lo: RGB mein
+        # badlo, lambi side MAX_SIDE_PX tak rakho, JPEG mein save karo.
+        # Chhoti image pehle se hi ho to bilkul waisi ki waisi rehti hai.
+        with Image.open(tmp_path) as img:
+            img = img.convert("RGB")
+            if max(img.size) > MAX_SIDE_PX:
+                img.thumbnail((MAX_SIDE_PX, MAX_SIDE_PX), Image.LANCZOS)
+            small_path = tmp_path + ".small.jpg"
+            img.save(small_path, "JPEG", quality=90)
     except Exception:
         return JSONResponse(
             status_code=400,
@@ -176,7 +192,7 @@ async def detect(request: Request, image: Optional[UploadFile] = File(None)):
                     + (f" ({_load_error})" if _load_error else "")
                 },
             )
-        result = _classify(tmp_path)
+        result = _classify(small_path or tmp_path)
         return result
     except Exception as exc:  # noqa: BLE001 - report the real error
         return JSONResponse(
@@ -184,10 +200,12 @@ async def detect(request: Request, image: Optional[UploadFile] = File(None)):
             content={"error": f"Analysis fail ho gaya: {exc}"},
         )
     finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        for path in (tmp_path, small_path):
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 
 if __name__ == "__main__":
